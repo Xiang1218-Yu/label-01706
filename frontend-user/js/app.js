@@ -428,12 +428,34 @@ function downloadImage(index) {
     }
 }
 
-function downloadAll() {
+async function downloadAll() {
     if (!state.images.length) { showToast('⚠️ 没有可下载的图片'); return; }
-    showToast(`📥 正在下载 ${state.images.length} 张图片...`);
-    state.images.forEach((_, i) => {
-        setTimeout(() => downloadImage(i), i * 500);
-    });
+    if (typeof JSZip === 'undefined') {
+        showToast('⚠️ ZIP 库未加载，逐张下载中...');
+        state.images.forEach((_, i) => { setTimeout(() => downloadImage(i), i * 500); });
+        return;
+    }
+    showToast('📦 正在打包下载...');
+    try {
+        const zip = new JSZip();
+        for (let i = 0; i < state.images.length; i++) {
+            const img = state.images[i];
+            const src = img.processedDataUrl || getOriginalDataUrl(img);
+            if (!src) continue;
+            const base64 = src.split(',')[1];
+            const baseName = img.name.replace(/\.[^.]+$/, '');
+            zip.file(`去水印_${baseName}.png`, base64, { base64: true });
+        }
+        const blob = await zip.generateAsync({ type: 'blob' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = '去水印图片_批量下载.zip';
+        link.click();
+        URL.revokeObjectURL(link.href);
+        showToast('✅ 批量下载完成');
+    } catch (err) {
+        showToast('❌ 打包失败：' + err.message);
+    }
 }
 
 // ========== PDF 导出 ==========
@@ -467,7 +489,10 @@ async function exportToPDF() {
             pdf.addImage(src, 'PNG', (pw - w) / 2, (ph - h) / 2, w, h);
         }
 
-        pdf.save('批量去水印图片.pdf');
+        const now = new Date();
+        const ts = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
+        const pdfName = `去水印图片_${state.images.length}张_${ts}.pdf`;
+        pdf.save(pdfName);
         showToast('✅ PDF 导出成功！');
     } catch (err) {
         showToast('❌ PDF 导出失败：' + err.message);
