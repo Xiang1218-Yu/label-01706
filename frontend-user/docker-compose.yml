@@ -1,0 +1,68 @@
+# Docker Compose 多环境部署配置
+# 支持一键启动开发、测试、生产环境
+# 使用方式：
+# 开发环境：docker-compose up dev
+# 测试环境：docker-compose up test
+# 生产环境：docker-compose up prod
+
+version: '3.8'
+
+# 公共配置模板
+x-common-config: &common-config
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: always
+  networks:
+    - frontend-network
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost/"]
+    interval: 30s
+    timeout: 3s
+    retries: 3
+    start_period: 10s
+
+services:
+  # 开发环境
+  dev:
+    <<: *common-config
+    container_name: frontend-user-dev
+    ports:
+      - "8080:80"
+    environment:
+      - ENV=dev
+    volumes:
+      # 开发环境支持热重载
+      - ./config/dev.env.js:/usr/share/nginx/html/js/env.js:ro
+      - ./css:/usr/share/nginx/html/css:ro
+      - ./js:/usr/share/nginx/html/js:ro
+      - ./index.html:/usr/share/nginx/html/index.html:ro
+    profiles: ["dev"]
+
+  # 测试环境
+  test:
+    <<: *common-config
+    container_name: frontend-user-test
+    ports:
+      - "8081:80"
+    environment:
+      - ENV=test
+    volumes:
+      - ./config/test.env.js:/usr/share/nginx/html/js/env.js:ro
+    profiles: ["test"]
+
+  # 生产环境
+  prod:
+    <<: *common-config
+    container_name: frontend-user-prod
+    ports:
+      - "80:80"
+    environment:
+      - ENV=prod
+    volumes:
+      - ./config/prod.env.js:/usr/share/nginx/html/js/env.js:ro
+    profiles: ["prod"]
+
+networks:
+  frontend-network:
+    driver: bridge

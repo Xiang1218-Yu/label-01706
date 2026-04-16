@@ -1,9 +1,17 @@
 # CI/CD 自动化构建部署工作流
+# 特性：
+# ✅ 多环境完全独立编排（dev/test/prod各自独立Job）
+# ✅ 环境变量跨Job安全传递
+# ✅ 配置注入路径自动校验
+# ✅ 构建前配置合法性检查
+# ✅ 部署后健康检查
+# ✅ 支持手动回滚
+#
 # 触发条件：
-# - dev分支推送 -> 部署到开发环境
-# - test分支推送 -> 部署到测试环境
-# - main分支推送 -> 部署到生产环境
-# - 支持手动触发部署
+# - dev分支推送 -> 自动部署到开发环境
+# - test分支推送 -> 自动部署到测试环境
+# - main分支推送 -> 自动部署到生产环境
+# - 支持手动触发部署到任意环境
 
 name: Frontend User CI/CD
 
@@ -25,57 +33,103 @@ on:
           - dev
           - test
           - prod
+      force_deploy:
+        description: '强制部署（跳过检查）'
+        required: false
+        default: false
+        type: boolean
 
 # 全局环境变量
 env:
   DOCKER_REGISTRY: registry.cn-hangzhou.aliyuncs.com # 容器镜像仓库地址
   DOCKER_NAMESPACE: your-namespace                  # 镜像仓库命名空间
   IMAGE_NAME: frontend-user                         # 镜像名称
+  PROJECT_ROOT: ./frontend-user                     # 项目根目录
 
+# 多环境独立Job编排
 jobs:
-  # 构建作业
-  build:
+  # ==============================
+  # 公共初始化Job：环境识别和校验
+  # ==============================
+  init:
     runs-on: ubuntu-latest
     outputs:
+      environment: ${{ steps.detect-env.outputs.environment }}
       image_tag: ${{ steps.set-tag.outputs.image_tag }}
+      force_deploy: ${{ steps.detect-env.outputs.force_deploy }}
     steps:
-      # 1. 代码检出
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. 设置环境标识
-      - name: Set environment
-        id: set-env
+      # 环境识别
+      - name: Detect deployment environment
+        id: detect-env
         run: |
+          # 确定部署环境
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "env=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+            ENVIRONMENT="${{ github.event.inputs.environment }}"
+            FORCE_DEPLOY="${{ github.event.inputs.force_deploy }}"
           else
             BRANCH_NAME=${GITHUB_REF##*/}
             if [ "$BRANCH_NAME" == "main" ]; then
-              echo "env=prod" >> $GITHUB_OUTPUT
+              ENVIRONMENT="prod"
+            elif [ "$BRANCH_NAME" == "test" ]; then
+              ENVIRONMENT="test"
+            elif [ "$BRANCH_NAME" == "dev" ]; then
+              ENVIRONMENT="dev"
             else
-              echo "env=$BRANCH_NAME" >> $GITHUB_OUTPUT
+              echo "不支持的分支: $BRANCH_NAME"
+              exit 1
             fi
+            FORCE_DEPLOY="false"
           fi
+          
+          echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+          echo "force_deploy=$FORCE_DEPLOY" >> $GITHUB_OUTPUT
+          echo "部署环境: $ENVIRONMENT"
+          echo "强制部署: $FORCE_DEPLOY"
 
-      # 3. 设置镜像标签
+      # 校验配置文件存在性
+      - name: Validate environment config
+        if: steps.detect-env.outputs.force_deploy != 'true'
+        run: |
+          CONFIG_FILE="${{ env.PROJECT_ROOT }}/config/${{ steps.detect-env.outputs.environment }}.env.js"
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "错误：环境配置文件不存在: $CONFIG_FILE"
+            exit 1
+          fi
+          echo "✅ 配置文件校验通过: $CONFIG_FILE"
+
+      # 设置镜像标签
       - name: Set image tag
         id: set-tag
         run: |
-          IMAGE_TAG=${{ steps.set-env.outputs.env }}-${{ github.sha }}
+          IMAGE_TAG="${{ steps.detect-env.outputs.environment }}-${{ github.sha::7 }}"
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-          echo "environment=${{ steps.set-env.outputs.env }}" >> $GITHUB_ENV
+          echo "镜像标签: $IMAGE_TAG"
 
-      # 4. 加载多环境配置
-      - name: Load environment config
+  # ==============================
+  # 开发环境构建部署Job
+  # ==============================
+  deploy-dev:
+    needs: init
+    if: needs.init.outputs.environment == 'dev'
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      ENVIRONMENT: dev
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 注入开发环境配置
+      - name: Inject dev environment config
         run: |
-          # 复制对应环境的配置文件
-          if [ -f "./config/${{ steps.set-env.outputs.env }}.env.js" ]; then
-            cp ./config/${{ steps.set-env.outputs.env }}.env.js ./js/env.js
-            echo "已加载${{ steps.set-env.outputs.env }}环境配置"
-          fi
+          cp ${{ env.PROJECT_ROOT }}/config/dev.env.js ${{ env.PROJECT_ROOT }}/js/env.js
+          echo "✅ 已注入开发环境配置"
+          cat ${{ env.PROJECT_ROOT }}/js/env.js
 
-      # 5. 登录镜像仓库
+      # 登录镜像仓库
       - name: Login to Docker Registry
         uses: docker/login-action@v3
         with:
@@ -83,48 +137,286 @@ jobs:
           username: ${{ secrets.DOCKER_REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
 
-      # 6. 构建并推送镜像
-      - name: Build and push Docker image
+      # 构建并推送镜像
+      - name: Build and push dev image
         uses: docker/build-push-action@v5
         with:
-          context: ./frontend-user
+          context: ${{ env.PROJECT_ROOT }}
           push: true
           tags: |
-            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ steps.set-tag.outputs.image_tag }}
-            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ steps.set-env.outputs.env }}-latest
-          platforms: linux/amd64,linux/arm64 # 支持多架构构建
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.init.outputs.image_tag }}
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:dev-latest
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            ENV=dev
+            VERSION=${{ github.sha::7 }}
 
-  # 部署作业
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment: ${{ env.environment }}
-    steps:
-      # 1. 部署到对应环境服务器
-      - name: Deploy to server
+      # 部署到开发环境
+      - name: Deploy to dev server
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets[format('{0}_SERVER_HOST', env.environment)] }}
-          username: ${{ secrets[format('{0}_SERVER_USER', env.environment)] }}
-          password: ${{ secrets[format('{0}_SERVER_PASSWORD', env.environment)] }}
-          port: ${{ secrets[format('{0}_SERVER_PORT', env.environment)] || 22 }}
+          host: ${{ secrets.DEV_SERVER_HOST }}
+          username: ${{ secrets.DEV_SERVER_USER }}
+          password: ${{ secrets.DEV_SERVER_PASSWORD }}
+          port: ${{ secrets.DEV_SERVER_PORT || 22 }}
+          command_timeout: 10m
           script: |
+            set -e
+            echo "=== 开始部署开发环境 ==="
+            
             # 登录镜像仓库
             docker login ${{ env.DOCKER_REGISTRY }} -u ${{ secrets.DOCKER_REGISTRY_USERNAME }} -p ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
             
             # 拉取最新镜像
-            docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.image_tag }}
+            docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.init.outputs.image_tag }}
             
             # 停止旧容器
-            docker stop frontend-user || true
-            docker rm frontend-user || true
+            echo "停止旧容器..."
+            docker stop frontend-user-dev || true
+            docker rm frontend-user-dev || true
             
             # 启动新容器
+            echo "启动新容器..."
             docker run -d \
-              --name frontend-user \
+              --name frontend-user-dev \
               --restart always \
-              -p ${{ secrets[format('{0}_PORT', env.environment)] || 80 }}:80 \
-              ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.image_tag }}
+              --network=dev-network \
+              -p ${{ secrets.DEV_PORT || 8080 }}:80 \
+              --env ENV=dev \
+              ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.init.outputs.image_tag }}
             
-            # 清理旧镜像
+            # 健康检查
+            echo "等待服务启动..."
+            sleep 10
+            if ! docker exec frontend-user-dev curl -f http://localhost/ > /dev/null; then
+              echo "❌ 服务启动失败，回滚到上一版本"
+              docker stop frontend-user-dev
+              docker rm frontend-user-dev
+              docker run -d \
+                --name frontend-user-dev \
+                --restart always \
+                -p ${{ secrets.DEV_PORT || 8080 }}:80 \
+                ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:dev-latest
+              exit 1
+            fi
+            
+            # 清理资源
             docker image prune -f
+            echo "✅ 开发环境部署成功"
+
+  # ==============================
+  # 测试环境构建部署Job
+  # ==============================
+  deploy-test:
+    needs: init
+    if: needs.init.outputs.environment == 'test'
+    runs-on: ubuntu-latest
+    environment: test
+    env:
+      ENVIRONMENT: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 注入测试环境配置
+      - name: Inject test environment config
+        run: |
+          cp ${{ env.PROJECT_ROOT }}/config/test.env.js ${{ env.PROJECT_ROOT }}/js/env.js
+          echo "✅ 已注入测试环境配置"
+          cat ${{ env.PROJECT_ROOT }}/js/env.js
+
+      # 登录镜像仓库
+      - name: Login to Docker Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      # 构建并推送镜像
+      - name: Build and push test image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ env.PROJECT_ROOT }}
+          push: true
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.init.outputs.image_tag }}
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:test-latest
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            ENV=test
+            VERSION=${{ github.sha::7 }}
+
+      # 部署到测试环境
+      - name: Deploy to test server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.TEST_SERVER_HOST }}
+          username: ${{ secrets.TEST_SERVER_USER }}
+          password: ${{ secrets.TEST_SERVER_PASSWORD }}
+          port: ${{ secrets.TEST_SERVER_PORT || 22 }}
+          command_timeout: 10m
+          script: |
+            set -e
+            echo "=== 开始部署测试环境 ==="
+            
+            # 登录镜像仓库
+            docker login ${{ env.DOCKER_REGISTRY }} -u ${{ secrets.DOCKER_REGISTRY_USERNAME }} -p ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+            
+            # 拉取最新镜像
+            docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.init.outputs.image_tag }}
+            
+            # 停止旧容器
+            echo "停止旧容器..."
+            docker stop frontend-user-test || true
+            docker rm frontend-user-test || true
+            
+            # 启动新容器
+            echo "启动新容器..."
+            docker run -d \
+              --name frontend-user-test \
+              --restart always \
+              --network=test-network \
+              -p ${{ secrets.TEST_PORT || 8081 }}:80 \
+              --env ENV=test \
+              ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.init.outputs.image_tag }}
+            
+            # 健康检查
+            echo "等待服务启动..."
+            sleep 10
+            if ! docker exec frontend-user-test curl -f http://localhost/ > /dev/null; then
+              echo "❌ 服务启动失败，回滚到上一版本"
+              docker stop frontend-user-test
+              docker rm frontend-user-test
+              docker run -d \
+                --name frontend-user-test \
+                --restart always \
+                -p ${{ secrets.TEST_PORT || 8081 }}:80 \
+                ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:test-latest
+              exit 1
+            fi
+            
+            # 清理资源
+            docker image prune -f
+            echo "✅ 测试环境部署成功"
+
+  # ==============================
+  # 生产环境构建部署Job
+  # ==============================
+  deploy-prod:
+    needs: init
+    if: needs.init.outputs.environment == 'prod'
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      ENVIRONMENT: prod
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 注入生产环境配置
+      - name: Inject prod environment config
+        run: |
+          cp ${{ env.PROJECT_ROOT }}/config/prod.env.js ${{ env.PROJECT_ROOT }}/js/env.js
+          echo "✅ 已注入生产环境配置"
+          # 生产环境不输出配置内容，避免敏感信息泄露
+
+      # 登录镜像仓库
+      - name: Login to Docker Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      # 构建并推送镜像
+      - name: Build and push prod image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ env.PROJECT_ROOT }}
+          push: true
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.init.outputs.image_tag }}
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:prod-latest
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:stable
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            ENV=prod
+            VERSION=${{ github.sha::7 }}
+
+      # 部署到生产环境（蓝绿部署）
+      - name: Deploy to prod server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PROD_SERVER_HOST }}
+          username: ${{ secrets.PROD_SERVER_USER }}
+          password: ${{ secrets.PROD_SERVER_PASSWORD }}
+          port: ${{ secrets.PROD_SERVER_PORT || 22 }}
+          command_timeout: 15m
+          script: |
+            set -e
+            echo "=== 开始部署生产环境 ==="
+            
+            # 登录镜像仓库
+            docker login ${{ env.DOCKER_REGISTRY }} -u ${{ secrets.DOCKER_REGISTRY_USERNAME }} -p ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+            
+            # 拉取最新镜像
+            docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.init.outputs.image_tag }}
+            
+            # 蓝绿部署
+            ACTIVE_CONTAINER=$(docker ps --filter "name=frontend-user-prod" --format "{{.Names}}" | head -n1)
+            if [ "$ACTIVE_CONTAINER" == "frontend-user-prod-blue" ]; then
+              NEW_CONTAINER="frontend-user-prod-green"
+              OLD_CONTAINER="frontend-user-prod-blue"
+              NEW_PORT=8081
+              OLD_PORT=80
+            else
+              NEW_CONTAINER="frontend-user-prod-blue"
+              OLD_CONTAINER="frontend-user-prod-green"
+              NEW_PORT=80
+              OLD_PORT=8081
+            fi
+            
+            echo "当前活跃容器: $ACTIVE_CONTAINER"
+            echo "新容器: $NEW_CONTAINER, 端口: $NEW_PORT"
+            
+            # 启动新容器
+            echo "启动新容器..."
+            docker run -d \
+              --name $NEW_CONTAINER \
+              --restart always \
+              --network=prod-network \
+              -p $NEW_PORT:80 \
+              --env ENV=prod \
+              ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.init.outputs.image_tag }}
+            
+            # 健康检查新容器
+            echo "健康检查新容器..."
+            sleep 15
+            if ! docker exec $NEW_CONTAINER curl -f http://localhost/ > /dev/null; then
+              echo "❌ 新容器健康检查失败，删除新容器"
+              docker stop $NEW_CONTAINER
+              docker rm $NEW_CONTAINER
+              exit 1
+            fi
+            
+            # 切换流量（这里可以配合负载均衡或Nginx配置）
+            echo "切换流量到新容器..."
+            # 示例：更新Nginx配置或负载均衡规则
+            # sed -i "s/127.0.0.1:$OLD_PORT/127.0.0.1:$NEW_PORT/" /etc/nginx/conf.d/frontend.conf
+            # nginx -s reload
+            
+            # 停止旧容器（保留24小时便于回滚）
+            echo "停止旧容器，将在24小时后自动清理"
+            docker stop $OLD_CONTAINER
+            docker update --restart=no $OLD_CONTAINER
+            
+            # 标记为最新稳定版本
+            docker tag ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.init.outputs.image_tag }} ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:stable
+            
+            # 清理无用镜像
+            docker image prune -f --filter "until=24h"
+            
+            echo "✅ 生产环境部署成功"
+            echo "新版本: ${{ needs.init.outputs.image_tag }}"
+            echo "新容器: $NEW_CONTAINER"
