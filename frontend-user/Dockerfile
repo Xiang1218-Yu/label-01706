@@ -23,7 +23,12 @@ RUN if [ -n "$API_BASE_URL" ]; then \
 
 # 自定义 nginx 配置，根据环境选择不同配置文件
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY nginx.${APP_ENV}.conf /etc/nginx/conf.d/env.conf 2>/dev/null || true
+# 先判断环境配置文件是否存在，不存在则创建空文件避免复制失败
+RUN if [ -f "nginx.${APP_ENV}.conf" ]; then \
+      cp nginx.${APP_ENV}.conf /etc/nginx/conf.d/env.conf; \
+    else \
+      touch /etc/nginx/conf.d/env.conf; \
+    fi
 
 # 最终运行镜像
 FROM nginx:1.25-alpine
@@ -33,6 +38,7 @@ RUN apk add --no-cache curl
 
 COPY --from=builder /usr/share/nginx/html /usr/share/nginx/html
 COPY --from=builder /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /etc/nginx/conf.d/env.conf /etc/nginx/conf.d/env.conf
 
 # 健康检查配置
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
