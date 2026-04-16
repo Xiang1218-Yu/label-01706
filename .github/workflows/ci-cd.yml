@@ -20,8 +20,8 @@ on:
 
 env:
   DOCKER_REGISTRY: ghcr.io
-  # Docker 镜像名称必须全小写，使用 lower() 函数转换
-  IMAGE_NAME_LOWER: ${{ lower(github.repository) }}/frontend-user
+  # Docker 镜像名称必须全小写，使用管道操作符转换
+  IMAGE_NAME_LOWER: ${{ github.repository | lower }}/frontend-user
 
 jobs:
   build-and-test:
