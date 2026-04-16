@@ -1,0 +1,58 @@
+# ============================================
+# Nginx 配置模板
+# 支持通过环境变量动态配置
+# ============================================
+
+server {
+    listen ${NGINX_PORT};
+    server_name localhost;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # 环境标识头（便于调试）
+    add_header X-Environment "${ENV_NAME}" always;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # API 代理（如果需要后端 API）
+    location /api/ {
+        proxy_pass ${API_BASE_URL}/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+
+    # 静态资源缓存配置
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff2?)$ {
+        # 根据环境变量决定是否启用缓存
+        if ($CACHE_ENABLED = "true") {
+            expires 7d;
+            add_header Cache-Control "public, immutable";
+        }
+        if ($CACHE_ENABLED != "true") {
+            expires -1;
+            add_header Cache-Control "no-cache, no-store, must-revalidate";
+        }
+        add_header X-Environment "${ENV_NAME}" always;
+    }
+
+    # gzip 压缩配置
+    gzip ${GZIP_ENABLED};
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+    gzip_min_length 1024;
+    gzip_comp_level 6;
+    gzip_vary on;
+    gzip_proxied any;
+
+    # 安全头
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+}

@@ -1,0 +1,44 @@
+# ============================================
+# Docker Compose 测试环境配置文件
+# 特性：
+#   - 模拟生产环境配置
+#   - 启用缓存和压缩
+#   - 支持自动化测试
+#   - 健康检查启用
+# ============================================
+
+version: "3.8"
+
+services:
+  frontend-user:
+    # 使用测试阶段构建
+    build:
+      target: testing
+      args:
+        BUILDPLATFORM: linux/amd64
+    container_name: frontend-user-test
+    ports:
+      - "8081:80"
+    volumes:
+      # 挂载日志目录
+      - ./logs/test:/var/log/nginx
+    environment:
+      # 环境标识
+      ENV_NAME: testing
+      # API 地址（测试环境）
+      API_BASE_URL: http://api-test.example.com
+      # Nginx 端口
+      NGINX_PORT: 80
+      # 启用缓存（模拟生产环境）
+      CACHE_ENABLED: "true"
+      # 启用 gzip 压缩
+      GZIP_ENABLED: "true"
+    # 测试环境重启策略
+    restart: on-failure
+    # 健康检查配置
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
