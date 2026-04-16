@@ -10,6 +10,14 @@
 name: CI/CD Pipeline
 
 # ============================================
+# 权限配置 - 必须配置才能推送镜像到GitHub Packages
+# ============================================
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+# ============================================
 # 触发条件
 # ============================================
 on:
@@ -23,7 +31,7 @@ on:
       - 'frontend-user/**'
       - '.github/workflows/**'
   
-  # Pull Request 时触发
+  # Pull Request 时触发（只构建不推送）
   pull_request:
     branches:
       - develop
@@ -66,11 +74,6 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 设置Node.js环境
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: 检查HTML语法
         run: |
           echo "检查HTML文件语法..."
@@ -97,15 +100,49 @@ jobs:
           done
 
   # ============================================
-  # 第二阶段：构建Docker镜像
+  # 第二阶段：构建Docker镜像（Pull Request时只构建不推送）
   # ============================================
-  build-docker:
-    name: 构建Docker镜像
+  build-docker-pr:
+    name: PR构建Docker镜像
     needs: lint-and-test
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       matrix:
         environment: [development, test, production]
+      fail-fast: false  # 一个环境失败不影响其他环境
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 构建镜像（不推送）
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend-user
+          file: ./frontend-user/Dockerfile
+          platforms: linux/amd64
+          push: false  # PR时只构建验证，不推送
+          build-args: |
+            BUILD_ENV=${{ matrix.environment }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================
+  # 第二阶段：构建并推送Docker镜像（Push或手动触发时）
+  # ============================================
+  build-docker:
+    name: 构建并推送Docker镜像
+    needs: lint-and-test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [development, test, production]
+      fail-fast: false  # 一个环境失败不影响其他环境
     
     steps:
       - name: 检出代码
@@ -125,6 +162,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
+          # 注意：GitHub Packages路径格式是 ghcr.io/用户名/仓库名/镜像名
           images: ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}/${{ env.DOCKER_IMAGE_NAME }}
           tags: |
             type=ref,event=branch
