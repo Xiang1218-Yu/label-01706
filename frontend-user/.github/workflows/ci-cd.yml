@@ -1,0 +1,130 @@
+# CI/CD 自动化构建部署工作流
+# 触发条件：
+# - dev分支推送 -> 部署到开发环境
+# - test分支推送 -> 部署到测试环境
+# - main分支推送 -> 部署到生产环境
+# - 支持手动触发部署
+
+name: Frontend User CI/CD
+
+# 触发规则
+on:
+  push:
+    branches:
+      - dev       # 开发环境分支
+      - test      # 测试环境分支
+      - main      # 生产环境分支
+  workflow_dispatch: # 支持手动触发
+    inputs:
+      environment:
+        description: '部署环境'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+
+# 全局环境变量
+env:
+  DOCKER_REGISTRY: registry.cn-hangzhou.aliyuncs.com # 容器镜像仓库地址
+  DOCKER_NAMESPACE: your-namespace                  # 镜像仓库命名空间
+  IMAGE_NAME: frontend-user                         # 镜像名称
+
+jobs:
+  # 构建作业
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.set-tag.outputs.image_tag }}
+    steps:
+      # 1. 代码检出
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. 设置环境标识
+      - name: Set environment
+        id: set-env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "env=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          else
+            BRANCH_NAME=${GITHUB_REF##*/}
+            if [ "$BRANCH_NAME" == "main" ]; then
+              echo "env=prod" >> $GITHUB_OUTPUT
+            else
+              echo "env=$BRANCH_NAME" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      # 3. 设置镜像标签
+      - name: Set image tag
+        id: set-tag
+        run: |
+          IMAGE_TAG=${{ steps.set-env.outputs.env }}-${{ github.sha }}
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "environment=${{ steps.set-env.outputs.env }}" >> $GITHUB_ENV
+
+      # 4. 加载多环境配置
+      - name: Load environment config
+        run: |
+          # 复制对应环境的配置文件
+          if [ -f "./config/${{ steps.set-env.outputs.env }}.env.js" ]; then
+            cp ./config/${{ steps.set-env.outputs.env }}.env.js ./js/env.js
+            echo "已加载${{ steps.set-env.outputs.env }}环境配置"
+          fi
+
+      # 5. 登录镜像仓库
+      - name: Login to Docker Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      # 6. 构建并推送镜像
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend-user
+          push: true
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ steps.set-tag.outputs.image_tag }}
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ steps.set-env.outputs.env }}-latest
+          platforms: linux/amd64,linux/arm64 # 支持多架构构建
+
+  # 部署作业
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ env.environment }}
+    steps:
+      # 1. 部署到对应环境服务器
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets[format('{0}_SERVER_HOST', env.environment)] }}
+          username: ${{ secrets[format('{0}_SERVER_USER', env.environment)] }}
+          password: ${{ secrets[format('{0}_SERVER_PASSWORD', env.environment)] }}
+          port: ${{ secrets[format('{0}_SERVER_PORT', env.environment)] || 22 }}
+          script: |
+            # 登录镜像仓库
+            docker login ${{ env.DOCKER_REGISTRY }} -u ${{ secrets.DOCKER_REGISTRY_USERNAME }} -p ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+            
+            # 拉取最新镜像
+            docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.image_tag }}
+            
+            # 停止旧容器
+            docker stop frontend-user || true
+            docker rm frontend-user || true
+            
+            # 启动新容器
+            docker run -d \
+              --name frontend-user \
+              --restart always \
+              -p ${{ secrets[format('{0}_PORT', env.environment)] || 80 }}:80 \
+              ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.image_tag }}
+            
+            # 清理旧镜像
+            docker image prune -f
