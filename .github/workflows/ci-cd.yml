@@ -10,7 +10,7 @@
 name: CI/CD Pipeline
 
 # ============================================
-# 权限配置 - 必须配置才能推送镜像到GitHub Packages
+# 权限配置 - 修复GitHub Packages推送权限问题
 # ============================================
 permissions:
   contents: read
@@ -74,6 +74,11 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
+      - name: 设置Node.js环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: 检查HTML语法
         run: |
           echo "检查HTML文件语法..."
@@ -100,49 +105,23 @@ jobs:
           done
 
   # ============================================
-  # 第二阶段：构建Docker镜像（Pull Request时只构建不推送）
-  # ============================================
-  build-docker-pr:
-    name: PR构建Docker镜像
-    needs: lint-and-test
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        environment: [development, test, production]
-      fail-fast: false  # 一个环境失败不影响其他环境
-    
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 设置Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: 构建镜像（不推送）
-        uses: docker/build-push-action@v5
-        with:
-          context: ./frontend-user
-          file: ./frontend-user/Dockerfile
-          platforms: linux/amd64
-          push: false  # PR时只构建验证，不推送
-          build-args: |
-            BUILD_ENV=${{ matrix.environment }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # ============================================
-  # 第二阶段：构建并推送Docker镜像（Push或手动触发时）
+  # 第二阶段：构建Docker镜像
+  # 根据触发条件自动决定构建哪些环境
   # ============================================
   build-docker:
-    name: 构建并推送Docker镜像
+    name: 构建Docker镜像 (${{ matrix.environment }})
     needs: lint-and-test
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
+      # 关键：一个环境构建失败不影响其他环境
+      fail-fast: false
       matrix:
-        environment: [development, test, production]
-      fail-fast: false  # 一个环境失败不影响其他环境
+        # 根据触发分支动态选择构建环境
+        environment: ${{ 
+          (github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'development') && fromJSON('["development"]') || 
+          (github.ref == 'refs/heads/test' || github.event.inputs.environment == 'test') && fromJSON('["test"]') || 
+          (github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production') && fromJSON('["production"]') || 
+          fromJSON('["development", "test", "production"]') }}
     
     steps:
       - name: 检出代码
@@ -152,6 +131,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: 登录Docker镜像仓库
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.DOCKER_REGISTRY }}
@@ -162,14 +142,15 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # 注意：GitHub Packages路径格式是 ghcr.io/用户名/仓库名/镜像名
+          # 修复镜像路径格式 - 使用完整仓库路径（包含仓库名）
+          # 格式：ghcr.io/所有者/仓库名/镜像名
           images: ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}/${{ env.DOCKER_IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
             type=sha,prefix=${{ matrix.environment }}-
             type=raw,value=${{ matrix.environment }}-latest
 
-      - name: 构建并推送镜像
+      - name: 构建并推送镜像（非PR）
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v5
         with:
           context: ./frontend-user
@@ -180,78 +161,76 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BUILD_ENV=${{ matrix.environment }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.environment }}
+          cache-to: type=gha,scope=${{ matrix.environment }},mode=max
+
+      - name: 仅构建镜像（PR时）
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend-user
+          file: ./frontend-user/Dockerfile
+          platforms: linux/amd64
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_ENV=${{ matrix.environment }}
+          cache-from: type=gha,scope=${{ matrix.environment }}
+          cache-to: type=gha,scope=${{ matrix.environment }},mode=max
 
   # ============================================
-  # 第三阶段：部署到开发环境
+  # 第三阶段：部署到对应环境
+  # 根据构建矩阵自动部署
   # ============================================
-  deploy-development:
-    name: 部署到开发环境
+  deploy:
+    name: 部署到${{ matrix.environment }}环境
     needs: build-docker
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'development'
-    environment: development
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ 
+          (github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'development') && fromJSON('["development"]') || 
+          (github.ref == 'refs/heads/test' || github.event.inputs.environment == 'test') && fromJSON('["test"]') || 
+          (github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production') && fromJSON('["production"]') || 
+          fromJSON('[]') }}
+    environment: ${{ matrix.environment }}
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 部署到开发服务器
+      - name: 部署到${{ matrix.environment }}服务器
         run: |
           echo "========================================"
-          echo "部署到开发环境"
-          echo "环境: development"
+          echo "部署到${{ matrix.environment }}环境"
+          echo "环境: ${{ matrix.environment }}"
           echo "分支: ${{ github.ref }}"
           echo "提交: ${{ github.sha }}"
+          echo "镜像: ghcr.io/${{ github.repository }}/${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.environment }}-latest"
           echo "========================================"
-          echo "✓ 开发环境部署完成"
-          echo "访问地址: http://dev.example.com"
-
-  # ============================================
-  # 第四阶段：部署到测试环境
-  # ============================================
-  deploy-test:
-    name: 部署到测试环境
-    needs: build-docker
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/test' || github.event.inputs.environment == 'test'
-    environment: test
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 部署到测试服务器
-        run: |
-          echo "========================================"
-          echo "部署到测试环境"
-          echo "环境: test"
-          echo "分支: ${{ github.ref }}"
-          echo "提交: ${{ github.sha }}"
-          echo "========================================"
-          echo "✓ 测试环境部署完成"
-          echo "访问地址: http://test.example.com"
-
-  # ============================================
-  # 第五阶段：部署到生产环境
-  # ============================================
-  deploy-production:
-    name: 部署到生产环境
-    needs: build-docker
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
-    environment: production
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 部署到生产服务器
-        run: |
-          echo "========================================"
-          echo "部署到生产环境"
-          echo "环境: production"
-          echo "分支: ${{ github.ref }}"
-          echo "提交: ${{ github.sha }}"
-          echo "========================================"
-          echo "⚠️ 生产环境部署需要人工确认"
-          echo "✓ 生产环境部署完成"
-          echo "访问地址: https://example.com"
+          
+          # 这里可以添加实际的部署命令，例如：
+          # - 连接到部署服务器
+          # - 拉取最新镜像
+          # - 重启服务
+          
+          if [ "${{ matrix.environment }}" = "production" ]; then
+            echo "⚠️ 生产环境部署"
+          fi
+          
+          echo "✓ ${{ matrix.environment }}环境部署完成"
+          
+          # 输出访问地址
+          case ${{ matrix.environment }} in
+            development)
+              echo "访问地址: http://localhost:8081"
+              ;;
+            test)
+              echo "访问地址: http://localhost:8082"
+              ;;
+            production)
+              echo "访问地址: https://example.com"
+              ;;
+          esac
