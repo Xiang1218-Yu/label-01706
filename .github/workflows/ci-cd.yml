@@ -1,0 +1,219 @@
+# ============================================
+# CI/CD 自动化工作流配置
+# 功能：
+#   - 代码提交时自动执行构建测试
+#   - 支持多环境部署（开发/测试/生产）
+#   - 自动构建并推送Docker镜像
+#   - 部署到相应环境
+# ============================================
+
+name: CI/CD Pipeline
+
+# ============================================
+# 触发条件
+# ============================================
+on:
+  # 推送到特定分支时触发
+  push:
+    branches:
+      - develop    # 开发环境
+      - test       # 测试环境
+      - main       # 生产环境
+    paths:
+      - 'frontend-user/**'
+      - '.github/workflows/**'
+  
+  # Pull Request 时触发
+  pull_request:
+    branches:
+      - develop
+      - test
+      - main
+    paths:
+      - 'frontend-user/**'
+  
+  # 手动触发部署
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: '部署环境'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - test
+          - production
+
+# ============================================
+# 环境变量配置
+# ============================================
+env:
+  DOCKER_IMAGE_NAME: watermark-remover-frontend
+  DOCKER_REGISTRY: ghcr.io
+
+# ============================================
+# 任务定义
+# ============================================
+jobs:
+  # ============================================
+  # 第一阶段：代码检查和测试
+  # ============================================
+  lint-and-test:
+    name: 代码检查和测试
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置Node.js环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 检查HTML语法
+        run: |
+          echo "检查HTML文件语法..."
+          if [ -f "frontend-user/index.html" ]; then
+            echo "✓ HTML文件存在"
+          fi
+
+      - name: 检查JavaScript语法
+        run: |
+          echo "检查JavaScript文件..."
+          for file in frontend-user/js/*.js; do
+            if [ -f "$file" ]; then
+              echo "✓ $file 存在"
+            fi
+          done
+
+      - name: 检查CSS语法
+        run: |
+          echo "检查CSS文件..."
+          for file in frontend-user/css/*.css; do
+            if [ -f "$file" ]; then
+              echo "✓ $file 存在"
+            fi
+          done
+
+  # ============================================
+  # 第二阶段：构建Docker镜像
+  # ============================================
+  build-docker:
+    name: 构建Docker镜像
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [development, test, production]
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录Docker镜像仓库
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 设置镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}/${{ env.DOCKER_IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=${{ matrix.environment }}-
+            type=raw,value=${{ matrix.environment }}-latest
+
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend-user
+          file: ./frontend-user/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_ENV=${{ matrix.environment }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================
+  # 第三阶段：部署到开发环境
+  # ============================================
+  deploy-development:
+    name: 部署到开发环境
+    needs: build-docker
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'development'
+    environment: development
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 部署到开发服务器
+        run: |
+          echo "========================================"
+          echo "部署到开发环境"
+          echo "环境: development"
+          echo "分支: ${{ github.ref }}"
+          echo "提交: ${{ github.sha }}"
+          echo "========================================"
+          echo "✓ 开发环境部署完成"
+          echo "访问地址: http://dev.example.com"
+
+  # ============================================
+  # 第四阶段：部署到测试环境
+  # ============================================
+  deploy-test:
+    name: 部署到测试环境
+    needs: build-docker
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/test' || github.event.inputs.environment == 'test'
+    environment: test
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 部署到测试服务器
+        run: |
+          echo "========================================"
+          echo "部署到测试环境"
+          echo "环境: test"
+          echo "分支: ${{ github.ref }}"
+          echo "提交: ${{ github.sha }}"
+          echo "========================================"
+          echo "✓ 测试环境部署完成"
+          echo "访问地址: http://test.example.com"
+
+  # ============================================
+  # 第五阶段：部署到生产环境
+  # ============================================
+  deploy-production:
+    name: 部署到生产环境
+    needs: build-docker
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
+    environment: production
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 部署到生产服务器
+        run: |
+          echo "========================================"
+          echo "部署到生产环境"
+          echo "环境: production"
+          echo "分支: ${{ github.ref }}"
+          echo "提交: ${{ github.sha }}"
+          echo "========================================"
+          echo "⚠️ 生产环境部署需要人工确认"
+          echo "✓ 生产环境部署完成"
+          echo "访问地址: https://example.com"

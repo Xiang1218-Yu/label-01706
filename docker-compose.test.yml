@@ -1,0 +1,39 @@
+# ============================================
+# Docker Compose 测试环境配置文件
+# 功能：定义测试环境特定的配置
+# 使用方式：docker-compose -f docker-compose.base.yml -f docker-compose.test.yml up
+# ============================================
+
+version: "3.8"
+
+services:
+  frontend-user:
+    # 构建参数 - 指定构建环境为测试环境
+    build:
+      args:
+        BUILD_ENV: test
+    # 测试环境容器名称
+    container_name: watermark-remover-frontend-test
+    # 端口映射 - 测试环境使用8082端口
+    ports:
+      - "8082:80"
+    # 测试环境环境变量
+    environment:
+      - NODE_ENV=test
+      - API_BASE_URL=http://test-api.example.com/api
+      - DEBUG=false
+    # 测试环境资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    # 测试环境日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
