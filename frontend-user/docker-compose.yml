@@ -1,0 +1,77 @@
+# Docker Compose 多环境部署配置
+# 支持多环境配置文件自动加载，完全隔离的环境配置
+# 使用方式：
+# 开发环境：docker-compose --env-file .env.dev up -d
+# 测试环境：docker-compose --env-file .env.test up -d
+# 生产环境：docker-compose --env-file .env.prod up -d
+# 或者使用脚本：./deploy.sh dev/test/prod
+
+version: '3.8'
+
+# 全局变量，从 .env 文件加载
+x-env-vars: &env-vars
+  ENV: ${ENV}
+  DEBUG: ${DEBUG}
+  LOG_LEVEL: ${LOG_LEVEL}
+  TZ: Asia/Shanghai
+
+# 公共配置模板
+x-common-config: &common-config
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      ENV: ${ENV}
+      VERSION: ${IMAGE_TAG}
+  image: ${IMAGE_NAME}:${IMAGE_TAG}
+  container_name: ${CONTAINER_NAME}
+  restart: ${RESTART_POLICY:-always}
+  networks:
+    - ${NETWORK_NAME:-frontend-network}
+  environment: *env-vars
+  deploy:
+    resources:
+      limits:
+        cpus: ${CPU_LIMIT:-1.0}
+        memory: ${MEMORY_LIMIT:-1G}
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost/"]
+    interval: ${HEALTHCHECK_INTERVAL:-30s}
+    timeout: 3s
+    retries: ${HEALTHCHECK_RETRIES:-3}
+    start_period: 10s
+
+services:
+  # 前端服务（根据环境变量自动适配所有环境）
+  frontend:
+    <<: *common-config
+    ports:
+      - "${PORT}:80"
+    volumes:
+      # 注入对应环境的配置文件
+      - ./config/${ENV}.env.js:/usr/share/nginx/html/js/env.js:ro
+      # 开发环境额外挂载本地文件支持热重载
+      - ${DEV_MOUNT:-./empty}:/usr/share/nginx/html/css:ro
+      - ${DEV_MOUNT:-./empty}:/usr/share/nginx/html/js:ro
+      - ${DEV_MOUNT:-./empty}:/usr/share/nginx/html/index.html:ro
+    # 根据环境变量开启日志
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-100m}"
+        max-file: "${LOG_MAX_FILE:-3}"
+
+# 网络配置（根据环境自动创建独立网络）
+networks:
+  ${NETWORK_NAME:-frontend-network}:
+    driver: bridge
+    name: ${NETWORK_NAME:-frontend-network}
+
+# 数据卷（按需创建）
+volumes:
+  empty:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+

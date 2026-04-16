@@ -1,0 +1,28 @@
+# Docker 忽略文件
+# 构建镜像时排除以下文件和目录，减少镜像体积
+
+# 版本控制
+.git
+.gitignore
+.github
+
+# 开发相关文件
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# 临时文件
+*.log
+*.tmp
+.DS_Store
+
+# 文档
+README.md
+*.md
+docs/
+
+# 配置文件模板
+*.example
+*.template
