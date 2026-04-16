@@ -1,0 +1,145 @@
+name: Frontend CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - test
+    paths:
+      - 'frontend-user/**'
+      - '.github/workflows/ci-cd.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+      - test
+    paths:
+      - 'frontend-user/**'
+      - '.github/workflows/ci-cd.yml'
+
+env:
+  DOCKER_REGISTRY: ghcr.io
+  # Docker 镜像名称必须全小写，使用管道操作符转换
+  IMAGE_NAME_LOWER: ${{ github.repository | lower }}/frontend-user
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Docker 镜像名称必须全小写
+          images: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}
+          tags: |
+            type=ref,event=branch
+            type=sha,format=long,prefix=
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+          flavor: |
+            latest=false
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend-user
+          file: ./frontend-user/Dockerfile
+          push: true
+          # 确保标签包含完整的SHA，与Trivy扫描保持一致
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}:${{ github.sha }}
+            ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan Docker image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          # 直接构建小写的镜像引用，确保不包含大写字母
+          image-ref: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}:${{ github.sha }}
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          # 扫描类型：操作系统漏洞、依赖库漏洞
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          # 启用扫描器：漏洞扫描和密钥扫描
+          scanners: 'vuln,secret'
+          # 使用自定义配置文件优化密钥检测
+          secret-config: 'trivy-secret.yaml'
+          # 使用忽略规则文件
+          trivyignores: '.trivyignore'
+          # 输出详细信息便于调试
+          args: '--debug'
+
+  deploy-development:
+    name: Deploy to Development
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    environment: development
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy to development server
+        run: |
+          echo "Deploying to development environment..."
+          echo "Environment: ${{ vars.ENV_NAME }}"
+          echo "Deploy URL: ${{ vars.DEPLOY_URL }}"
+
+  deploy-testing:
+    name: Deploy to Testing
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/test'
+    environment: testing
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy to test server
+        run: |
+          echo "Deploying to testing environment..."
+          echo "Environment: ${{ vars.ENV_NAME }}"
+          echo "Deploy URL: ${{ vars.DEPLOY_URL }}"
+
+  deploy-production:
+    name: Deploy to Production
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy to production server
+        run: |
+          echo "Deploying to production environment..."
+          echo "Environment: ${{ vars.ENV_NAME }}"
+          echo "Deploy URL: ${{ vars.DEPLOY_URL }}"

@@ -1,11 +1,31 @@
+# ============================================
+# Docker Compose 基础配置文件
+# 这是所有环境共享的基础配置
+# 使用方式：
+#   - 开发环境：docker-compose up
+#   - 测试环境：docker-compose -f docker-compose.yml -f docker-compose.test.yml up
+#   - 生产环境：docker-compose -f docker-compose.yml -f docker-compose.prod.yml up
+# ============================================
+
 version: "3.8"
 
+# 服务定义
 services:
   frontend-user:
     build:
       context: ./frontend-user
       dockerfile: Dockerfile
-    container_name: watermark-remover
-    ports:
-      - "8081:80"
     restart: unless-stopped
+    networks:
+      - frontend-network
+
+# 网络配置
+networks:
+  frontend-network:
+    driver: bridge
+    name: frontend-network
+
+# 卷配置（如果需要持久化数据）
+volumes:
+  nginx-logs:
+    driver: local
