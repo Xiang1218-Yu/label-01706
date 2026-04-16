@@ -77,7 +77,7 @@ docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 ### 3. 访问应用
 - 开发环境：http://localhost:8080
-- 测试环境：http://localhost:8081
+- 测试环境：http://localhost:8082
 - 生产环境：http://localhost
 
 ---

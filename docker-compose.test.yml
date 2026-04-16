@@ -18,7 +18,7 @@ services:
         BUILDPLATFORM: linux/amd64
     container_name: frontend-user-test
     ports:
-      - "8081:80"
+      - "8082:80"
     volumes:
       # 挂载日志目录
       - ./logs/test:/var/log/nginx

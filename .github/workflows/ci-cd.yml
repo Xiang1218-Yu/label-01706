@@ -20,7 +20,8 @@ on:
 
 env:
   DOCKER_REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/frontend-user
+  # Docker 镜像名称必须全小写，使用 lower() 函数转换
+  IMAGE_NAME_LOWER: ${{ lower(github.repository) }}/frontend-user
 
 jobs:
   build-and-test:
@@ -48,11 +49,14 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Docker 镜像名称必须全小写
+          images: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}
           tags: |
             type=ref,event=branch
             type=sha,format=long,prefix=
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+          flavor: |
+            latest=false
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -60,7 +64,10 @@ jobs:
           context: ./frontend-user
           file: ./frontend-user/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          # 确保标签包含完整的SHA，与Trivy扫描保持一致
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}:${{ github.sha }}
+            ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
@@ -69,12 +76,22 @@ jobs:
       - name: Scan Docker image for vulnerabilities
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+          # 直接构建小写的镜像引用，确保不包含大写字母
+          image-ref: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}:${{ github.sha }}
           format: 'table'
           exit-code: '0'
           ignore-unfixed: true
+          # 扫描类型：操作系统漏洞、依赖库漏洞
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
+          # 启用扫描器：漏洞扫描和密钥扫描
+          scanners: 'vuln,secret'
+          # 使用自定义配置文件优化密钥检测
+          secret-config: 'trivy-secret.yaml'
+          # 使用忽略规则文件
+          trivyignores: '.trivyignore'
+          # 输出详细信息便于调试
+          args: '--debug'
 
   deploy-development:
     name: Deploy to Development
