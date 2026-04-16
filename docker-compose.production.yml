@@ -1,0 +1,55 @@
+# ============================================
+# Docker Compose 生产环境配置文件
+# 功能：定义生产环境特定的配置
+# 使用方式：docker-compose -f docker-compose.base.yml -f docker-compose.production.yml up -d
+# ============================================
+
+version: "3.8"
+
+services:
+  frontend-user:
+    # 构建参数 - 指定构建环境为生产环境
+    build:
+      args:
+        BUILD_ENV: production
+    # 生产环境容器名称
+    container_name: watermark-remover-frontend-prod
+    # 端口映射 - 生产环境使用80端口
+    ports:
+      - "80:80"
+    # 生产环境环境变量
+    environment:
+      - NODE_ENV=production
+      - API_BASE_URL=https://api.example.com/api
+      - DEBUG=false
+    # 生产环境资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      # 生产环境重启策略
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+    # 生产环境安全配置
+    security_opt:
+      - no-new-privileges:true
+    # 生产环境只读文件系统
+    read_only: true
+    # 临时文件系统
+    tmpfs:
+      - /var/cache/nginx
+      - /var/log/nginx
+      - /run
+    # 生产环境日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"

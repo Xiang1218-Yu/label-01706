@@ -1,0 +1,40 @@
+# ============================================
+# Docker Compose 基础配置文件
+# 功能：定义所有环境通用的服务配置
+# 使用方式：与环境特定配置文件组合使用
+# ============================================
+
+version: "3.8"
+
+# ============================================
+# 服务定义
+# ============================================
+services:
+  # 前端用户端服务
+  frontend-user:
+    # 构建配置
+    build:
+      context: ./frontend-user
+      dockerfile: Dockerfile
+    # 容器名称前缀（由环境配置覆盖）
+    container_name: watermark-remover-frontend
+    # 重启策略
+    restart: unless-stopped
+    # 网络配置
+    networks:
+      - app-network
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# ============================================
+# 网络配置
+# ============================================
+networks:
+  app-network:
+    driver: bridge
+    name: app-network
